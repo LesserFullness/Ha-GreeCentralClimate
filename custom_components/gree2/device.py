@@ -72,11 +72,18 @@ class Gree2Climate(ClimateEntity):
 
         self._acOptions = {
             'Pow': 0,
-            'Mod': str(self._hvac_mode.index(HVACMode.OFF)),
+            'Mod': 0,  # 使用数字索引而不是字符串
             'WdSpd': 0,
             'SetTem': 26,
+            'Air': 0,
+            'Blo': 0,
+            'Health': 0,
             'SwhSlp': 0,
-        }
+            'SwingLfRig': 0,
+            'Quiet': 0,
+            'SvSt': 0,
+            'Add0.1': 0
+    }
 
     @property
     def should_poll(self):
@@ -239,19 +246,83 @@ class Gree2Climate(ClimateEntity):
     def dealStatusPack(self, statusPack):
         if statusPack is not None:
             self._available = True
-            for i, val in enumerate(statusPack['cols']):
-                self._acOptions[val] = statusPack['dat'][i]
-            _LOGGER.info('Climate {} status: {}'.format(
-                self._name, self._acOptions))
-            self.UpdateHAStateToCurrentACState()
-            self.schedule_update_ha_state()
+            try:
+            # 验证数据完整性
+                if not isinstance(statusPack, dict) or 'cols' not in statusPack or 'dat' not in statusPack:
+                    _LOGGER.warning(f"Invalid status pack structure for {self._name}: {statusPack}")
+                    return
+                
+                cols = statusPack['cols']
+                dat = statusPack['dat']
+            
+            # 确保cols和dat长度匹配
+                min_length = min(len(cols), len(dat))
+                if len(cols) != len(dat):
+                    _LOGGER.warning(f"Data length mismatch for {self._name}. cols: {len(cols)}, dat: {len(dat)}")
+            
+            # 安全处理每个字段
+                for i in range(min_length):
+                    col_name = cols[i]
+                    data_value = dat[i]
+                
+                # 清洗和验证数据
+                    cleaned_value = self._cleanDataValue(col_name, data_value)
+                    self._acOptions[col_name] = cleaned_value
+                
+                _LOGGER.info('Climate {} status: {}'.format(self._name, self._acOptions))
+                self.UpdateHAStateToCurrentACState()
+                self.schedule_update_ha_state()
+            
+            except Exception as e:
+                _LOGGER.error(f"Error processing status pack for {self._name}: {e}")
+                _LOGGER.debug(f"Problematic data: {statusPack}")
+                # 即使处理失败，也不要将设备标记为不可用，保持最后已知状态
+                # self._available = False
+                self.schedule_update_ha_state()
+
+    def _cleanDataValue(self, col_name, value):
+        """清洗和验证数据值"""
+    # 处理空值
+        if value == "" or value is None:
+        # 根据字段类型返回适当的默认值
+            numeric_fields = ['Pow', 'Mod', 'WdSpd', 'SetTem', 'Air', 'Blo', 
+                         'Health', 'SwhSlp', 'SwingLfRig', 'Quiet', 'SvSt', 'Add0.1']
+            return 0 if col_name in numeric_fields else ""
+    
+    # 确保数值字段是数字类型
+        try:
+            if col_name in ['Pow', 'Mod', 'WdSpd', 'SetTem', 'Air', 'Blo', 
+                       'Health', 'SwhSlp', 'SwingLfRig', 'Quiet', 'SvSt', 'Add0.1']:
+                return int(value) if str(value).isdigit() else 0
+        except (ValueError, TypeError):
+            _LOGGER.warning(f"Failed to convert {col_name} value '{value}' to int for {self._name}")
+            return 0
+    
+        return value
 
     def dealResPack(self, resPack):
         if resPack is not None:
-            for i, val in enumerate(resPack['opt']):
-                self._acOptions[val] = resPack['val'][i]
-            self.UpdateHAStateToCurrentACState()
-            self.schedule_update_ha_state()
+            try:
+                if not isinstance(resPack, dict) or 'opt' not in resPack or 'val' not in resPack:
+                    _LOGGER.warning(f"Invalid response pack structure for {self._name}: {resPack}")
+                    return
+                
+                opt = resPack['opt']
+                val = resPack['val']
+            
+                min_length = min(len(opt), len(val))
+                for i in range(min_length):
+                    opt_name = opt[i]
+                    opt_value = val[i]
+                    cleaned_value = self._cleanDataValue(opt_name, opt_value)
+                    self._acOptions[opt_name] = cleaned_value
+                
+                self.UpdateHAStateToCurrentACState()
+                self.schedule_update_ha_state()
+            
+            except Exception as e:
+                _LOGGER.error(f"Error processing response pack for {self._name}: {e}")
+                self.schedule_update_ha_state()
 
     def syncState(self, options):
         commands = []
@@ -268,40 +339,99 @@ class Gree2Climate(ClimateEntity):
         self._bridge.sync_status(message)
 
     def UpdateHATargetTemperature(self):
-        # Sync set temperature to HA
-        tem = int(self._acOptions['SetTem'])
-        if 'Add0.1' in self._acOptions:
-            decimal = self._acOptions['Add0.1']
-            if decimal:
-                tem = tem + int(decimal) * 0.1
-        self._target_temperature = tem
-        _LOGGER.info('{} HA target temp set according to HVAC state to: {}'.format(
-            self._name, str(tem)))
+        """Sync set temperature to HA with error handling"""
+        try:
+            tem = 26  # 默认温度
+            if 'SetTem' in self._acOptions:
+                set_tem_value = self._acOptions['SetTem']
+                if set_tem_value != "" and set_tem_value is not None:
+                    tem = int(set_tem_value)
+        
+        # 处理小数温度
+            if 'Add0.1' in self._acOptions:
+                decimal_value = self._acOptions['Add0.1']
+                if decimal_value != "" and decimal_value is not None:
+                    try:
+                        decimal = int(decimal_value)
+                        if decimal:
+                            tem = tem + decimal * 0.1
+                    except (ValueError, TypeError):
+                        pass  # 忽略小数部分错误
+        
+            self._target_temperature = tem
+            _LOGGER.info('{} HA target temp set according to HVAC state to: {}'.format(
+                self._name, str(tem)))
+            
+        except Exception as e:
+            _LOGGER.error(f"Error updating target temperature for {self._name}: {e}")
+        # 设置安全默认值
+            self._target_temperature = 26
 
     def UpdateHAHvacMode(self):
-        # Sync current HVAC operation mode to HA
-        if (self._acOptions['Pow'] == 0):
+        """Sync current HVAC operation mode to HA with error handling"""
+        try:
+            power = 0
+            if 'Pow' in self._acOptions:
+                power_value = self._acOptions['Pow']
+                if power_value != "" and power_value is not None:
+                    power = int(power_value)
+        
+            if power == 0:
+                self._hvac_mode = HVACMode.OFF
+            else:
+                mode_index = 0  # 默认制冷模式
+                if 'Mod' in self._acOptions:
+                    mod_value = self._acOptions['Mod']
+                    if mod_value != "" and mod_value is not None:
+                        mode_index = int(mod_value)
+            
+                if mode_index < len(self._hvac_modes):
+                    self._hvac_mode = self._hvac_modes[mode_index]
+                else:
+                    _LOGGER.warning(f"Invalid mode index {mode_index} for {self._name}, using default")
+                    self._hvac_mode = HVACMode.COOL
+                
+            _LOGGER.info('{} HA operation mode set according to HVAC state to: {}'.format(
+                self._name, str(self._hvac_mode)))
+            
+        except Exception as e:
+            _LOGGER.error(f"Error updating HVAC mode for {self._name}: {e}")
             self._hvac_mode = HVACMode.OFF
-        else:
-            self._hvac_mode = self._hvac_modes[self._acOptions['Mod']]
-        _LOGGER.info('{} HA operation mode set according to HVAC state to: {}'.format(
-            self._name, str(self._hvac_mode)))
 
     def UpdateHAFanMode(self):
-        # Sync current HVAC Fan mode state to HA
-        index = int(self._acOptions['WdSpd'])
-        if index < len(self._fan_modes):
-            self._fan_mode = self._fan_modes[int(self._acOptions['WdSpd'])]
-            _LOGGER.info('{} HA fan mode set according to HVAC state to: {}'.format(
-                self._name, str(self._fan_mode)))
-        else:
-            _LOGGER.info('{} HA fan mode set WdSpd to: {}'.format(
-                self._name, str(self._acOptions['WdSpd'])))
+        """Sync current HVAC Fan mode state to HA with error handling"""
+        try:
+            index = 0  # 默认自动模式
+            if 'WdSpd' in self._acOptions:
+                wdspd_value = self._acOptions['WdSpd']
+                if wdspd_value != "" and wdspd_value is not None:
+                    index = int(wdspd_value)
+        
+            if index < len(self._fan_modes):
+                self._fan_mode = self._fan_modes[index]
+                _LOGGER.info('{} HA fan mode set according to HVAC state to: {}'.format(
+                    self._name, str(self._fan_mode)))
+            else:
+                _LOGGER.warning('{} HA fan mode index out of range: {}'.format(
+                    self._name, str(index)))
+                self._fan_mode = FAN_AUTO  # 使用默认值
+            
+        except Exception as e:
+            _LOGGER.error(f"Error updating fan mode for {self._name}: {e}")
+            self._fan_mode = FAN_AUTO
 
     def UpdateHAStateToCurrentACState(self):
-        self.UpdateHATargetTemperature()
-        self.UpdateHAHvacMode()
-        self.UpdateHAFanMode()
+        """Update all HA states with comprehensive error handling"""
+        try:
+            self.UpdateHATargetTemperature()
+            self.UpdateHAHvacMode()
+            self.UpdateHAFanMode()
+        except Exception as e:
+            _LOGGER.error(f"Error updating HA state for {self._name}: {e}")
+        # 设置安全默认值，避免设备变为不可用状态
+            self._target_temperature = 26
+            self._hvac_mode = HVACMode.OFF
+            self._fan_mode = FAN_AUTO
 
     @callback
     def _async_update_current_temp(self, state):
