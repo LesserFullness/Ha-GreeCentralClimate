@@ -22,6 +22,11 @@ climate:
   - platform: gree2
     temp_step: 0.5
 ```
+## 最新修改，device.py
+### 解决：
+格力空调集成组件在解析数据时，期望得到数字但收到了空字符串，导致程序出错：
+错误信息：list indices must be integers or slices, not str（列表索引必须是整数，不能是字符串）
+状态更新失败：由于解析失败，这台空调的状态无法正常更新，因此在Home Assistant中显示为"不可用"。
 
 ## 最新修改,集成[Fake-Gree-server](https://github.com/markv9401/Fake-Gree-server),通过该server进行云控的状态获取与控制
 
